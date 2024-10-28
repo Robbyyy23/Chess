@@ -1,0 +1,2005 @@
+using System;
+using System.Windows.Forms;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement;
+
+namespace Chess
+{
+    public partial class fMain : Form
+    {
+        fChessB fChess;
+        public fMain()
+        {
+            InitializeComponent();
+
+            listBoxTimeOptions.Items.Add("Option 1 (10 Minutes)");
+            listBoxTimeOptions.Items.Add("Option 2 (5 Minutes)");
+            listBoxTimeOptions.Items.Add("Option 3 (3 Minutes)");
+            listBoxTimeOptions.SelectedIndex = 0;
+
+
+            fChess = new fChessB(this, GetInitialSeconds());
+        }
+        private int GetInitialSeconds()
+        {
+            string selectedItem = listBoxTimeOptions.SelectedItem as string;
+
+            if (selectedItem != null)
+            {
+                
+                if (selectedItem.Contains("Option 1"))
+                {
+                    return 600;
+                }
+                else if (selectedItem.Contains("Option 2"))
+                {
+                    return 300;
+                }
+                else if (selectedItem.Contains("Option 3"))
+                {
+                    return 10;
+                }
+            }
+            return 100;
+        }
+
+
+        private void btnExit_Click(object sender, EventArgs e)
+        {
+            Application.Exit();
+        }
+
+        private void btnSingle_Click(object sender, EventArgs e)
+        {
+            this.Hide();
+            if (fChess != null)
+            {
+                fChess = new fChessB(this, GetInitialSeconds());
+            }
+            fChess.Show();
+        }
+    }
+}
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Chess
+{
+    public partial class fChessB : Form
+    {
+        private readonly fMain fMain;
+        private const int DIMENSIUNE = 60;
+        private readonly PictureBox[,] pieceImages = new PictureBox[8, 8];
+        private readonly Images images = new Images();
+        private readonly Dictionary<Position, Move> moveCache = new Dictionary<Position, Move>();
+        private bool gameStarted = false;
+        private Panel menuContainer;
+        private GameState gameState;
+        private Position selectedPos = null;
+        private ChessCursors chessCursors;
+        private const int TimerInterval = 1000; // 1 second
+        private Timer timerWhite;
+        private Timer timerBlack;
+        private int whiteCountdownSeconds;
+        private int blackCountdownSeconds;
+        private int tempCountdownSeconds;
+
+
+
+        public fChessB(fMain f, int initialSeconds)
+        {
+            InitializeComponent();
+            fMain = f;
+            InitializeBoard();
+            InitializeMenuControl();
+            gameState = new GameState(Player.White, Board.Initial());
+            DrawBoard(gameState.Board);
+            chessCursors = new ChessCursors();
+            SetCursor(gameState.CurrentPlayer);
+
+            tempCountdownSeconds = initialSeconds;
+            whiteCountdownSeconds = initialSeconds;
+            blackCountdownSeconds = initialSeconds;
+
+            InitializeTimers();
+            DisablePieces();
+        }
+
+
+
+        private void InitializeBoard()
+        {
+            for (int r = 0; r < 8; r++)
+            {
+                for (int c = 0; c < 8; c++)
+                {
+                    PictureBox pbimg = new PictureBox();
+                    pieceImages[r, c] = pbimg;
+                    pbimg.Size = new Size(DIMENSIUNE, DIMENSIUNE);
+                    pbimg.Location = new Point(c * DIMENSIUNE, r * DIMENSIUNE);
+                    pbimg.SizeMode = PictureBoxSizeMode.Zoom;
+                    pbimg.BackColor = Color.Transparent;
+                    pbimg.MouseDown += PictureBox_MouseDown;
+
+                    pbChessB.Controls.Add(pbimg);
+
+
+                }
+            }
+
+        }
+
+        private void InitializeTimers()
+        {
+            timerWhite = new Timer();
+            timerWhite.Interval = TimerInterval;
+            timerWhite.Tick += WhiteTimer_Tick;
+
+            timerBlack = new Timer();
+            timerBlack.Interval = TimerInterval;
+            timerBlack.Tick += BlackTimer_Tick;
+            UpdateTimerLabels();
+        }
+
+        private void DrawBoard(Board board)
+        {
+            for (int r = 0; r < 8; r++)
+            {
+                for (int c = 0; c < 8; c++)
+                {
+                    Piece piece = gameState.Board[r, c];
+                    pieceImages[r, c].Image = images.GetImage(piece);
+                }
+            }
+
+        }
+
+        private void PictureBox_MouseDown(object sender, EventArgs e)
+        {
+            if (IsMenuOnScreen())
+            {
+                return;
+            }
+            PictureBox clickedPictureBox = (PictureBox)sender;
+            int row = clickedPictureBox.Location.Y / DIMENSIUNE;
+            int col = clickedPictureBox.Location.X / DIMENSIUNE;
+            Position clickedPosition = new Position(row, col);
+
+            if (selectedPos == null)
+            {
+                HideHighlights();
+                OnFromPositionSelected(clickedPosition);
+            }
+            else
+            {
+                OnToPositionSelected(clickedPosition);
+            }
+
+
+            DrawBoard(gameState.Board);
+        }
+
+
+
+        private void CacheMoves(IEnumerable<Move> moves)
+        {
+            moveCache.Clear();
+            foreach (Move move in moves)
+            {
+                moveCache[move.ToPos] = move;
+            }
+
+        }
+
+
+        private void OnFromPositionSelected(Position pos)
+        {
+            Piece clickedPiece = gameState.Board[pos];
+            IEnumerable<Move> moves = gameState.LegalMovesForPiece(pos);
+
+            if (moves.Any())
+            {
+                selectedPos = pos;
+                CacheMoves(moves);
+
+
+                ShowHighlights();
+            }
+        }
+
+        private void OnToPositionSelected(Position pos)
+        {
+            selectedPos = null;
+            HideHighlights();
+
+
+            if (moveCache.TryGetValue(pos, out Move move))
+            {
+                if (move.Type == MoveType.PawnPromotion)
+                {
+                    HandlePromotion(move.FromPos, move.ToPos);
+                }
+                else
+                {
+                    HandleMove(move);
+                }
+
+            }
+        }
+        private void HandleMove(Move move)
+        {
+            gameState.MakeMove(move);
+            DrawBoard(gameState.Board);
+            SetCursor(gameState.CurrentPlayer);
+
+            if (gameState.IsGameOver())
+            {
+                ShowGameOver();
+                StopTimers();
+            }
+
+            if (gameState.CurrentPlayer == Player.White)
+            {
+                timerWhite.Start();
+                timerBlack.Stop();
+            }
+            else
+            {
+                timerBlack.Start();
+                timerWhite.Stop();
+            }
+
+
+        }
+
+        private void HandlePromotion(Position from, Position to)
+        {
+            pieceImages[to.Row, to.Column].BackgroundImage = images.GetImage(gameState.CurrentPlayer, PieceType.Pawn);
+            pieceImages[to.Row, to.Column].BackgroundImage = null;
+            PromotionMenu promMenu = new PromotionMenu(gameState.CurrentPlayer);
+
+
+            promMenu.PieceSelected += type =>
+            {
+                menuContainer.Controls.Clear();
+                Move promMove = new PawnPromotion(from, to, type);
+
+                HandleMove(promMove);
+            };
+            promMenu.ShowDialog();
+        }
+
+        private void ShowHighlights()
+        {
+            foreach (Position to in moveCache.Keys)
+            {
+                pieceImages[to.Row, to.Column].BackColor = Color.Green;
+                pieceImages[to.Row, to.Column].BorderStyle = BorderStyle.FixedSingle;
+                pieceImages[to.Row, to.Column].ForeColor = Color.Black;
+            }
+        }
+
+        private void HideHighlights()
+        {
+            foreach (Position to in moveCache.Keys)
+            {
+                pieceImages[to.Row, to.Column].BackColor = Color.Transparent;
+                pieceImages[to.Row, to.Column].BorderStyle = BorderStyle.None;
+
+            }
+        }
+
+        private void SetCursor(Player player)
+        {
+            if (player == Player.White)
+            {
+                Cursor = Cursors.Default;
+            }
+            else
+            {
+                Cursor = chessCursors.BlackCursor;
+            }
+        }
+        private void InitializeMenuControl()
+        {
+            menuContainer = new Panel();
+            menuContainer.Name = "MenuContainer";
+            Controls.Add(menuContainer);
+        }
+
+        private bool IsMenuOnScreen()
+        {
+            return menuContainer.Controls.Count > 0;
+        }
+
+        private void ShowGameOver()
+        {
+            GameOverMenu gameOverMenu = new GameOverMenu(gameState);
+            gameOverMenu.OptionSelected += option =>
+            {
+                if (option == Option.Restart)
+                {
+                    menuContainer.Controls.Clear();
+                    gameOverMenu.Close();
+                    RestartGame();
+                }
+                else
+                {
+                    Application.Exit();
+                }
+            };
+            StopTimers();
+            gameOverMenu.ShowDialog();
+        }
+
+
+        private void RestartGame()
+        {
+            HideHighlights();
+            moveCache.Clear();
+            gameState = new GameState(Player.White, Board.Initial());
+            gameStarted = false;
+            ResetTimers();
+            StopTimers();
+            DisablePieces();
+            DrawBoard(gameState.Board);
+            SetCursor(gameState.CurrentPlayer);
+        }
+
+        private void ResetTimers()
+        {
+            whiteCountdownSeconds = tempCountdownSeconds;
+            blackCountdownSeconds = tempCountdownSeconds;
+
+
+            UpdateTimerLabels();
+
+            if (gameState.CurrentPlayer == Player.White)
+            {
+                if (timerWhite != null)
+                {
+                    timerWhite.Start();
+                }
+            }
+            else
+            {
+                if (timerBlack != null)
+                {
+                    timerBlack.Start();
+                }
+            }
+        }
+        private void WhiteTimer_Tick(object sender, EventArgs e)
+        {
+            if (gameState.CurrentPlayer == Player.White)
+            {
+                whiteCountdownSeconds--;
+                gameState.UpdateWhiteCountdownSeconds(whiteCountdownSeconds);
+                UpdateTimerLabels();
+            }
+            if (whiteCountdownSeconds <= 0 )
+            {
+                StopTimers();
+                gameState.SetResult(new Result(Player.Black, EndReason.RanOutOfTime));
+                gameState.TimerExpiredPlayer = Player.White;
+                ShowGameOver();
+            }
+        }
+
+        private void BlackTimer_Tick(object sender, EventArgs e)
+        {
+            if (gameState.CurrentPlayer == Player.Black)
+            {
+                blackCountdownSeconds--;
+               gameState.UpdateBlackCountdownSeconds(blackCountdownSeconds);
+                UpdateTimerLabels();
+            }
+            if (blackCountdownSeconds <= 0)
+            {
+                StopTimers();
+                gameState.SetResult( new Result(Player.White, EndReason.RanOutOfTime));
+                gameState.TimerExpiredPlayer = Player.Black;
+                ShowGameOver();
+            }
+        }
+
+        private void StopTimers()
+        {
+            timerWhite.Stop();
+            timerBlack.Stop();
+        }
+        private void UpdateTimerLabels()
+        {
+            lWhiteTimer.Text = $"White: {FormatTime(whiteCountdownSeconds)}";
+            lBlackTimer.Text = $"Black: {FormatTime(blackCountdownSeconds)}";
+        }
+
+        private string FormatTime(int seconds)
+        {
+            TimeSpan timeSpan = TimeSpan.FromSeconds(seconds);
+            return $"{timeSpan.Minutes:00}:{timeSpan.Seconds:00}";
+        }
+        private void DisablePieces()
+        {
+            foreach (PictureBox pb in pieceImages)
+            {
+                pb.Enabled = false;
+            }
+        }
+
+        private void EnablePieces()
+        {
+            foreach (PictureBox pb in pieceImages)
+            {
+                pb.Enabled = true;
+            }
+        }
+
+        private void btnRestart_Click(object sender, EventArgs e)
+        {
+            RestartGame();
+        }
+
+        private void btnPause_Click(object sender, EventArgs e)
+        {
+            if (gameStarted)
+            {
+                gameStarted = false;
+                StopTimers();
+                DisablePieces();
+            }
+        }
+
+        private void btnStart_Click(object sender, EventArgs e)
+        {
+            if (!gameStarted)
+            {
+                gameStarted = true;
+
+                if (gameState.CurrentPlayer == Player.White)
+                {
+                    if (timerWhite != null)
+                    {
+                        timerWhite.Start();
+                    }
+                }
+                else
+                {
+                    if (timerBlack != null)
+                    {
+                        timerBlack.Start();
+                    }
+                }
+
+                EnablePieces();
+            }
+        }
+    }
+}
+
+using System;
+using System.Windows.Forms;
+
+namespace Chess
+{
+    public partial class PromotionMenu : Form
+    {
+        public event Action<PieceType> PieceSelected;
+        public PromotionMenu(Player player)
+        {
+            InitializeComponent();
+
+            Images images = new Images();
+            pbQueen.BackgroundImage = images.GetImage(player, PieceType.Queen);
+            pbBishop.BackgroundImage = images.GetImage(player, PieceType.Bishop);
+            pbRook.BackgroundImage = images.GetImage(player, PieceType.Rook);
+            pbKnight.BackgroundImage = images.GetImage(player, PieceType.Knight);
+
+        }
+
+        private void pbQueen_Click(object sender, EventArgs e)
+        {
+            PieceSelected?.Invoke(PieceType.Queen);
+            Close();
+        }
+
+        private void pbBishop_Click(object sender, EventArgs e)
+        {
+            PieceSelected?.Invoke(PieceType.Bishop);
+            Close();
+        }
+
+        private void pbRook_Click(object sender, EventArgs e)
+        {
+            PieceSelected?.Invoke(PieceType.Rook);
+            Close();
+        }
+
+        private void pbKnight_Click(object sender, EventArgs e)
+        {
+            PieceSelected?.Invoke(PieceType.Knight);
+            Close();
+        }
+    }
+}
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using Chess;
+
+namespace Chess
+{
+    public class GameState
+    {
+        public Board Board { get; }
+        public Player CurrentPlayer { get; private set; }
+        public Result Result { get; private set; } = null;
+
+        public int WhiteCountdownSeconds = 10;
+        public int BlackCountdownSeconds = 10;
+
+        private int noCaptureOrPawnMoves = 0;
+        public Player TimerExpiredPlayer { get; set; } = Player.None;
+
+
+        public GameState(Player player, Board board)
+        {
+            CurrentPlayer = player;
+            Board = board;
+        }
+
+        public IEnumerable<Move> LegalMovesForPiece(Position pos)
+        {
+            if (Board.IsEmpty(pos) || Board[pos].Color != CurrentPlayer)
+            {
+                return Enumerable.Empty<Move>();
+            }
+
+            Piece piece = Board[pos];
+            IEnumerable<Move> moveCandidates = piece.GetMoves(pos, Board);
+            return moveCandidates.Where(move => move.IsLegal(Board));
+        }
+
+        public void MakeMove(Move move)
+        {
+            Board.SetPawnSkipPositon(CurrentPlayer, null);
+            bool captureOrPawn = move.Execute(Board);
+
+            if (captureOrPawn)
+            {
+                noCaptureOrPawnMoves=0;
+            }
+            else
+            {
+                noCaptureOrPawnMoves++;
+            }
+
+            PlayerExtensions playerExtensions = new PlayerExtensions(CurrentPlayer);
+            CurrentPlayer = playerExtensions.Opponent();
+            CheckForGameOver();
+
+        }
+
+        public IEnumerable<Move> AllLegalMovesFor(Player player)
+        {
+            IEnumerable<Move> moveCandidates = Board.PiecePositionsFor(player).SelectMany(pos =>
+            {
+                Piece piece = Board[pos];
+                return piece.GetMoves(pos, Board);
+            });
+            return moveCandidates.Where(move => move.IsLegal(Board));
+        }
+        private void CheckForGameOver()
+        {
+            //CheckForTimeout();
+            if (!AllLegalMovesFor(CurrentPlayer).Any())
+            {
+                if (Board.IsInCheck(CurrentPlayer))
+                {
+                    PlayerExtensions playerExtensions = new PlayerExtensions(CurrentPlayer);
+                    Player opponent = playerExtensions.Opponent();
+                    Result = new Result(opponent, EndReason.Checkmate);
+                }
+                else
+                {
+                    Result = new Result(Player.None, EndReason.Stalemate);
+                }
+            }
+            else if (Board.InsufficientMaterial())
+            {
+                Result = new Result(Player.None, EndReason.InsufficientMaterial);
+            }
+            else if (FiftyMoveRule())
+            {
+                Result = new Result(Player.None, EndReason.FiftyMoveRule);
+            }
+        }
+        private void CheckForTimeout()
+        {
+            if (WhiteCountdownSeconds <= 0)
+            {
+                Result = new Result(Player.Black, EndReason.RanOutOfTime);
+                TimerExpiredPlayer = Player.White;
+            }
+            else if (BlackCountdownSeconds <= 0)
+            {
+                Result = new Result(Player.White, EndReason.RanOutOfTime);
+                TimerExpiredPlayer = Player.Black;
+            }
+        }
+
+        public void UpdateWhiteCountdownSeconds(int seconds)
+        {
+            WhiteCountdownSeconds = seconds;
+        }
+
+        public void UpdateBlackCountdownSeconds(int seconds)
+        {
+            BlackCountdownSeconds = seconds;
+        }
+        public void SetResult(Result result)
+        {
+            Result = result;
+        }
+
+        public bool IsGameOver()
+        {
+            return Result != null;
+        }
+
+        public bool FiftyMoveRule()
+        {
+            int fullMoves = noCaptureOrPawnMoves / 2;
+            return fullMoves == 50;
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public enum Player
+    {
+        None,
+        White,
+        Black
+    }
+    public class PlayerExtensions
+    {
+        private Player player;
+        public PlayerExtensions(Player player) 
+        {
+            this.player = player;
+        }
+
+        public Player Opponent()
+        {
+            switch (player)
+            {
+                case Player.White:
+                    return Player.Black;
+                case Player.Black:
+                    return Player.White;
+                default:
+                    return Player.None;
+            }
+        }
+        public Player GetOpponent()
+        {
+            return (player == Player.White) ? Player.Black : Player.White;
+        }
+    }
+}
+using System;
+using System.Windows.Forms;
+
+namespace Chess
+{
+    public partial class GameOverMenu : Form
+    {
+        public event Action<Option> OptionSelected;
+        public GameOverMenu(GameState gameState)
+        {
+            InitializeComponent();
+
+            Result result = gameState.Result;
+
+            
+                WinnerText.Text = GetWinnerText(result.Winner);
+                ReasonText.Text = GetReasonText(result.Reason, gameState.CurrentPlayer);
+            
+           
+        }
+
+        private string GetWinnerText(Player winner)
+        {
+            string result;
+            switch (winner)
+            {
+                case Player.White:
+                    result = "Alb a castigat!";
+                    break;
+                case Player.Black:
+                    result = "Negru a castigat!";
+                    break;
+                default:
+                    result = "Egalitate";
+                    break;
+            }
+
+            return result;
+        }
+
+        private string PlayerString(Player player)
+        {
+            string play;
+            switch (player)
+            {
+                case Player.White:
+                    play = "Alb";
+                    break;
+                case Player.Black:
+                    play = "Negru";
+                    break;
+                default:
+                    play = "";
+                    break;
+            }
+
+            return play;
+        }
+
+        private string GetReasonText(EndReason reason,Player currentPlayer) 
+        {
+            string result;
+            switch (reason)
+            {
+                case EndReason.Stalemate:
+                    result = $"Egaitate - {PlayerString(currentPlayer)} nu se poate misca";
+                    break;
+                case EndReason.Checkmate:
+                    result = $"Sah Mat - {PlayerString(currentPlayer)} nu se poate misca";
+                    break;
+                case EndReason.FiftyMoveRule:
+                    result = $"Egalitate - Regula de 50 de mutari";
+                    break;
+                case EndReason.InsufficientMaterial:
+                    result = $"Egalitate - Piese insuficiente";
+                    break;
+                case EndReason.RanOutOfTime:
+                    result = $"Sah Mat - {PlayerString(currentPlayer)} nu mai are timp";
+                    break;
+                default:
+                    result = "";
+                    break;
+            }
+            return result;
+        }
+        private void btnRestart_Click(object sender, EventArgs e)
+        {
+            OptionSelected?.Invoke(Option.Restart);
+        }
+
+        private void btnExit_Click(object sender, EventArgs e)
+        {
+            OptionSelected?.Invoke(Option.Exit);
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Position
+    {
+        public int Row { get; }
+        public int Column { get; }
+
+        public Position(int row, int column)
+        {
+            Row = row;      
+            Column = column;
+        }
+
+        public Player SquareColor()
+        {
+            if((Row+Column)%2==0)
+            {
+                return Player.White;
+            }
+            return Player.Black;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is Position pozitie &&
+                   Row == pozitie.Row &&
+                   Column == pozitie.Column;
+        }
+
+        public override int GetHashCode()
+        {
+            int hashCode = 240067226;
+            hashCode = hashCode * -1521134295 + Row.GetHashCode();
+            hashCode = hashCode * -1521134295 + Column.GetHashCode();
+            return hashCode;
+        }
+
+        public static bool operator ==(Position left, Position right)
+        {
+            return EqualityComparer<Position>.Default.Equals(left, right);
+        }
+
+        public static bool operator !=(Position left, Position right)
+        {
+            return !(left == right);
+        }
+
+        public Position Add(Direction dir)
+        {
+            return new Position(Row + dir.RowDelta, Column + dir.ColumnDelta);
+        }
+
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+
+namespace Chess
+{
+    public class Images
+    {
+        private readonly Dictionary<PieceType, Image> whiteSources;
+        private readonly Dictionary<PieceType, Image> blackSources;
+
+        public Images()
+        {
+            whiteSources = new Dictionary<PieceType, Image>
+        {
+            { PieceType.Pawn, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\WP.png") },
+            { PieceType.Bishop, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\WB.png") },
+            { PieceType.Knight, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\WN.png") },
+            { PieceType.Rook, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\WR.png") },
+            { PieceType.Queen, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\WQ.png") },
+            { PieceType.King, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\WK.png") },
+        };
+
+            blackSources = new Dictionary<PieceType, Image>
+        {
+            { PieceType.Pawn, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\BP.png") },
+            { PieceType.Bishop, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\BB.png") },
+            { PieceType.Knight, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\BN.png") },
+            { PieceType.Rook, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\BR.png") },
+            { PieceType.Queen, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\BQ.png") },
+            { PieceType.King, LoadImage("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\Poze piese\\BK.png") },
+        };
+        }
+
+
+        private  Image LoadImage(string filePath)
+        {
+            return Image.FromFile(filePath);
+        }
+
+        public Image GetImage(Player color, PieceType type)
+        {
+            switch (color)
+            {
+                case Player.White:
+                    return whiteSources.ContainsKey(type) ? whiteSources[type] : null;
+                case Player.Black:
+                    return blackSources.ContainsKey(type) ? blackSources[type] : null;
+                default:
+                    return null;
+            }
+        }
+        public  Image GetImage(Piece piece)
+        {
+            if (piece == null) return null;
+            return GetImage(piece.Color, piece.Type);
+        }
+
+        
+    }
+
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public enum MoveType
+    {
+        Normal,
+        CastleKs,
+        CastleQs,
+        DoublePawn,
+        EnPassant,
+        PawnPromotion
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public enum Option
+    {
+        Restart,
+        Exit
+    }
+}
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public enum EndReason
+    {
+        Checkmate,
+        Stalemate,
+        FiftyMoveRule,
+        InsufficientMaterial,
+        RanOutOfTime
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Direction
+    {
+
+        public static Direction Nord => new Direction(-1, 0);
+        public static Direction Sud => new Direction(1, 0);
+        public static Direction Est => new Direction(0, 1);
+        public static Direction West => new Direction(0, -1);
+        public static Direction NordEst => new Direction(-1, 1);
+        public static Direction NordWest => new Direction(-1, -1);
+        public static Direction SudEst => new Direction(1, 1);
+        public static Direction SudWest => new Direction(1, -1);
+        public int RowDelta {  get; }
+        public int ColumnDelta { get; }
+        public Direction(int rowDelta, int columnDelta) 
+        {
+            RowDelta = rowDelta;
+            ColumnDelta = columnDelta;
+        }
+        public static Direction CreateDirection(int rowDelta, int columnDelta)
+        {
+            return new Direction(rowDelta, columnDelta);
+        }
+        public Direction Add(Direction other)
+        {
+            return new Direction(RowDelta + other.RowDelta, ColumnDelta + other.ColumnDelta);
+        }
+
+        public Direction Multiply(int scalar)
+        {
+            return new Direction(scalar * RowDelta, scalar * ColumnDelta);
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Counting
+    {
+        private readonly Dictionary<PieceType, int> whiteCount= new Dictionary<PieceType, int>();
+        private readonly Dictionary<PieceType, int> blackCount = new Dictionary<PieceType, int>();
+
+        public int TotalCount { get; private set; }
+        public Counting() 
+        { 
+            foreach(PieceType type in Enum.GetValues(typeof(PieceType))) 
+            {
+                whiteCount[type] = 0;
+                blackCount[type] = 0;
+            }
+        }
+
+        public void Increment(Player color,PieceType type)
+        {
+            if (color == Player.White)
+            {
+                whiteCount[type]++;
+            }
+            else if (color == Player.Black)
+            {
+                blackCount[type]++;
+            }
+
+            TotalCount++;
+        }
+
+        public int White(PieceType type)
+        {
+            return whiteCount[type];
+        }
+        public int Black(PieceType type)
+        {
+            return blackCount[type];
+        }
+    }
+}
+namespace Chess
+{
+    public class ChessPiece
+    {
+        public string ImagePath { get; }
+        public int Column { get; set; }
+        public int Row { get; set; }
+
+        public ChessPiece(string imagePath, int column, int row)
+        {
+            ImagePath = imagePath;
+            Column = column;
+            Row = row;
+        }
+    }
+
+}
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Chess
+{
+    public class ChessCursors
+    {
+        //public Cursor WhiteCursor { get; private set; }
+        public Cursor BlackCursor { get; private set; }
+
+        public ChessCursors()
+        {
+            //WhiteCursor = LoadCursor("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\aero_arrow_black.cur");
+            BlackCursor = LoadCursor("C:\\Program Files (x86)\\Proiectare\\Chess\\Chess\\Resources\\aero_arrow_black.cur");
+        }
+        public Cursor LoadCursor(string filePath)
+        {
+            return new Cursor(filePath);
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Board
+    {
+        public readonly Piece[,] pieces=new Piece[8,8];
+
+        private readonly Dictionary<Player,Position> pawnSkipPositions = new Dictionary<Player, Position>
+        {
+            {Player.White,null}, 
+            {Player.Black,null}
+        };
+        public Piece this[int row, int col]
+        {
+            get { return pieces[row, col]; }
+            set { pieces[row, col] = value; }
+        }
+
+        public Piece this[Position pos]
+        {
+            get { return this[pos.Row,pos.Column]; }
+            set { this[pos.Row, pos.Column] = value; }
+        }
+
+        public Position GetPawnSkipPosition(Player player)
+        {
+            return pawnSkipPositions[player];
+        }
+
+        public void SetPawnSkipPositon(Player player, Position pos)
+        {
+            pawnSkipPositions[player] = pos;
+        }
+
+        public static Board Initial()
+        {
+            Board board = new Board();
+            board.AddStartPieces();
+            return board;
+        }
+
+        private void AddStartPieces()
+        {
+            this[0, 0] = new Rook(Player.Black);
+            this[0, 1] = new Knight(Player.Black);
+            this[0, 2] = new Bishop(Player.Black);
+            this[0, 3] = new Queen(Player.Black);
+            this[0, 4] = new King(Player.Black);
+            this[0, 5] = new Bishop(Player.Black);
+            this[0, 6] = new Knight(Player.Black);
+            this[0, 7] = new Rook(Player.Black);
+
+            this[7, 0] = new Rook(Player.White);
+            this[7, 1] = new Knight(Player.White);
+            this[7, 2] = new Bishop(Player.White);
+            this[7, 3] = new Queen(Player.White);
+            this[7, 4] = new King(Player.White);
+            this[7, 5] = new Bishop(Player.White);
+            this[7, 6] = new Knight(Player.White);
+            this[7, 7] = new Rook(Player.White);
+
+            for (int c = 0; c < 8; c++)
+            {
+                this[1, c] = new Pawn(Player.Black);
+                this[6, c] = new Pawn(Player.White);
+
+            }
+
+        }
+        public static bool IsInside(Position poz)
+        {
+            return poz.Row>=0 && poz.Row<8 && poz.Column>=0 && poz.Column<8;
+        }
+
+        public bool IsEmpty(Position poz)
+        {
+            return this[poz]==null;
+        }
+
+        public IEnumerable<Position> PiecePositions()
+        {
+            for (int r = 0; r < 8; r++)
+            {
+                for (int c = 0; c < 8; c++)
+                {
+                    Position pos = new Position(r, c);
+                    if (!IsEmpty(pos)) 
+                    { 
+                        yield return pos; 
+                    }
+                }
+            }
+        }
+
+        public IEnumerable<Position> PiecePositionsFor(Player player)
+        {
+            return PiecePositions().Where(pos => this[pos].Color==player);
+        }
+
+        public bool IsInCheck(Player currentPlayer)
+        {
+            Player opponentPlayer = (currentPlayer == Player.White) ? Player.Black : Player.White;
+
+            return PiecePositionsFor(opponentPlayer).Any(pos =>
+            {
+                Piece piece = this[pos];
+                return piece.CanCaptureOpponentKing(pos, this);
+            });
+        }
+
+        public Board Copy()
+        {
+            Board copy = new Board();
+
+            foreach(Position pos in PiecePositions())
+            {
+                copy[pos]= this[pos].Copy();
+            }
+            return copy;
+        }
+
+        public Counting CountPieces()
+        {
+            Counting counting = new Counting();
+
+            foreach(Position pos in PiecePositions())
+            {
+                Piece piece= this[pos];
+                counting.Increment(piece.Color, piece.Type);
+            }
+            return counting;
+        }
+
+        public bool InsufficientMaterial()
+        {
+            Counting counting= CountPieces();
+
+            return IsKingVKing(counting) || IsKingBishopVKing(counting)|| 
+                IsKingKnightVKing(counting) ||IsKingBishopVKingBishop(counting);
+        }
+
+        private bool IsKingVKing(Counting counting)
+        {
+            return counting.TotalCount == 2;
+        }
+
+        private bool IsKingBishopVKing(Counting counting)
+        {
+            return counting.TotalCount == 3 && (counting.White(PieceType.Bishop) == 1 || counting.Black(PieceType.Bishop) == 1);
+        }
+
+        private bool IsKingKnightVKing(Counting counting)
+        {
+            return counting.TotalCount == 3 && (counting.White(PieceType.Knight) == 1 || counting.Black(PieceType.Knight) == 1);
+        }
+        private bool IsKingBishopVKingBishop(Counting counting)
+        {
+            if(counting.TotalCount != 4)
+            {
+                return false;
+            }
+            if(counting.White(PieceType.Bishop) != 1 || counting.Black(PieceType.Bishop) != 1)
+            {
+                return false;
+            }
+
+            Position wBishopPos=FindPiece(Player.White,PieceType.Bishop);
+            Position bBishopPos = FindPiece(Player.Black, PieceType.Bishop);
+
+            return wBishopPos.SquareColor() == bBishopPos.SquareColor();
+        }
+
+        private Position FindPiece(Player color, PieceType type)
+        {
+            return PiecePositionsFor(color).First(pos => this[pos].Type == type);
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Rook : Piece
+    {
+        public override PieceType Type => PieceType.Rook;
+        public override Player Color { get; }
+
+        public readonly Direction[] dirs = new Direction[]
+        {
+           new Direction(-1, 0),  // Nord Direction.Nord,
+           new Direction(1, 0), // Sud Direction.Sud,
+           new Direction(0, 1),   // Est Direction.Est,
+           new Direction(0, -1),   // West Direction.West,
+        };
+        public Rook(Player color)
+        {
+            Color = color;
+        }
+        
+        public override Piece Copy()
+        {
+            Rook copy = new Rook(Color);
+            copy.HasMoved = HasMoved;
+            return copy;
+        }
+        public override IEnumerable<Move> GetMoves(Position from, Board board)
+        {
+            return MovePositionsInDirs(from, board, dirs).Select(to => new NormalMove(from, to));
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Queen : Piece
+    {
+        public override PieceType Type => PieceType.Queen;
+        public override Player Color { get; }
+
+        public readonly Direction[] dirs = new Direction[]
+        {
+           new Direction(-1, 0),  // Nord Direction.Nord,
+           new Direction(1, 0), // Sud Direction.Sud,
+           new Direction(0, 1),   // Est Direction.Est,
+           new Direction(0, -1),   // West Direction.West,
+           new Direction(-1, 1),  // NordEst  Direction.NordEst,
+           new Direction(-1, -1), // NordWest Direction.NordWest,
+           new Direction(1, 1),   // SudEst Direction.SudEst,
+           new Direction(1, -1)   // SudWest Direction.SudWest
+        };
+        public Queen(Player color)
+        {
+            Color = color;
+        }
+        public override Piece Copy()
+        {
+            Queen copy = new Queen(Color);
+            copy.HasMoved = HasMoved;
+            return copy;
+        }
+        public override IEnumerable<Move> GetMoves(Position from, Board board)
+        {
+            return MovePositionsInDirs(from, board, dirs).Select(to => new NormalMove(from, to));
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public abstract class Piece
+    {
+        public abstract PieceType Type { get; }
+        public abstract Player Color { get; }
+        public bool HasMoved { get; set; }=false;
+
+        public abstract Piece Copy();
+
+        public abstract IEnumerable<Move> GetMoves(Position from, Board board);
+
+        protected IEnumerable<Position> MovePositionsInDir(Position from,Board board,Direction dir)
+        {
+            for(Position pos = from.Add(dir); Board.IsInside(pos); pos = pos.Add( dir))
+            {
+                if (board.IsEmpty(pos))
+                {
+                    yield return pos;
+                    continue;
+                }
+                Piece piece = board[pos];
+                if (piece.Color != Color)
+                {
+                    yield return pos;
+                }
+
+                yield break;
+            }
+        }
+
+        protected IEnumerable<Position> MovePositionsInDirs(Position from, Board board, Direction[] dirs)
+        {
+            return dirs.SelectMany(dir=>MovePositionsInDir(from, board, dir));
+        }
+
+        public virtual bool CanCaptureOpponentKing(Position from, Board board)
+        {
+            return GetMoves(from, board).Any(move =>
+            {
+                Piece piece = board[move.ToPos];
+                return piece != null && piece.Type == PieceType.King;
+            });
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Pawn : Piece
+    {
+        public override PieceType Type => PieceType.Pawn;
+        public override Player Color { get; }
+
+        private readonly Direction forward;
+        public Pawn(Player color) 
+        { 
+            Color = color;
+            Direction direction = new Direction(0, 0);
+
+            if (color == Player.White)
+            {
+                forward = direction.Nord;
+            }
+            else if (color == Player.Black)
+            {
+                forward = direction.Sud;
+            }
+        }
+
+        public override Piece Copy()
+        {
+            Pawn copy=new Pawn(Color);
+            copy.HasMoved = HasMoved;
+            return copy;
+        }
+
+        private bool CanMoveTo(Position pos,Board board) 
+        {
+            return Board.IsInside(pos) && board.IsEmpty(pos);
+        }
+
+        private bool CanCaptureAt(Position pos,Board board)
+        {
+            if(!Board.IsInside(pos) || board.IsEmpty(pos)) 
+            {
+                return false;
+            }
+            return board[pos].Color != Color;
+        }
+
+        private static IEnumerable<Move> PromotionMoves(Position from, Position to)
+        {
+            yield return new PawnPromotion(from, to, PieceType.Knight);
+            yield return new PawnPromotion(from, to, PieceType.Bishop);
+            yield return new PawnPromotion(from, to, PieceType.Rook);
+            yield return new PawnPromotion(from, to, PieceType.Queen);
+
+        }
+
+        private IEnumerable<Move> ForwardMoves(Position from,Board board)
+        {
+            Position oneMovePos = from.Add( forward);
+            if (CanMoveTo(oneMovePos, board))
+            {
+                if (oneMovePos.Row == 0 || oneMovePos.Row == 7)
+                {
+                    foreach (Move promMove in PromotionMoves(from, oneMovePos))
+                    {
+                        yield return promMove;
+                    }
+                }
+                else
+                {
+                    yield return new NormalMove(from, oneMovePos);
+                }
+
+                Position twoMovesPos = oneMovePos.Add( forward);
+
+                if(!HasMoved && CanMoveTo(twoMovesPos, board))
+                {
+                    yield return new DoublePawn(from,twoMovesPos);
+                }
+            }
+        }
+
+        private IEnumerable<Move> DiagonalMoves(Position from, Board board)
+        {
+            Direction direction = new Direction(0, 0); // Create an instance based on your needs
+
+            PlayerExtensions playerExtensions = new PlayerExtensions(board[from].Color);
+            foreach (Direction dir in new Direction[] { direction.West, direction.Est })
+            {
+                Position to = from.Add(forward).Add(dir);
+
+                if (to == board.GetPawnSkipPosition(playerExtensions.GetOpponent()))
+                {
+                    yield return new EnPassant(from, to);
+                }
+                else if (CanCaptureAt(to, board))
+                {
+                    if (to.Row == 0 || to.Row == 7)
+                    {
+                        foreach (Move promMove in PromotionMoves(from, to))
+                        {
+                            yield return promMove;
+                        }
+                    }
+                    else
+                    {
+                        yield return new NormalMove(from, to);
+                    }
+                }
+            }
+        }
+
+        public override IEnumerable<Move> GetMoves(Position from, Board board)
+        {
+            return ForwardMoves(from, board).Concat(DiagonalMoves(from,board));
+        }
+
+        public override bool CanCaptureOpponentKing(Position from, Board board)
+        {
+            return DiagonalMoves(from, board).Any(move =>
+            {
+                Piece piece = board[move.ToPos];
+                return piece != null && piece.Type == PieceType.King;
+            });
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Knight : Piece
+    {
+        public override PieceType Type => PieceType.Knight;
+        public override Player Color { get; }
+        public Knight(Player color)
+        {
+            Color = color;
+        }
+        public override Piece Copy()
+        {
+            Knight copy = new Knight(Color);
+            copy.HasMoved = HasMoved;
+            return copy;
+        }
+
+        public IEnumerable<Position> PotentialToPosition(Position from)
+        {
+            Direction direction = new Direction(0,0); // Create an instance of Direction
+
+            foreach (Direction vDir in new Direction[] { direction.Nord, direction.Sud })
+            {
+                foreach (Direction hDir in new Direction[] { direction.Est, direction.West })
+                {
+                    yield return from.Add(vDir.Multiply(2)).Add(hDir);
+                    yield return from.Add(hDir.Multiply(2)).Add(vDir);
+                }
+            }
+        }
+
+        public IEnumerable<Position> MovePositions(Position from,Board board)
+        {
+            return PotentialToPosition(from).Where(pos => Board.IsInside(pos)
+                && (board.IsEmpty(pos) || board[pos].Color != Color));
+        }
+
+        public override IEnumerable<Move> GetMoves(Position from, Board board)
+        {
+            return MovePositions(from,board).Select(to=> new NormalMove(from,to));
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class King : Piece
+    {
+        public override PieceType Type => PieceType.King;
+        public override Player Color { get; }
+
+        public readonly Direction[] dirs = new Direction[]
+        {
+           new Direction(-1, 0),  // Nord Direction.Nord,
+           new Direction(1, 0), // Sud Direction.Sud,
+           new Direction(0, 1),   // Est Direction.Est,
+           new Direction(0, -1),   // West Direction.West,
+           new Direction(-1, 1),  // NordEst  Direction.NordEst,
+           new Direction(-1, -1), // NordWest Direction.NordWest,
+           new Direction(1, 1),   // SudEst Direction.SudEst,
+           new Direction(1, -1)   // SudWest Direction.SudWest
+        };
+        public King(Player color)
+        {
+            Color = color;
+        }
+
+        private static bool IsUnmovedRook(Position pos, Board board)
+        {
+            if (board.IsEmpty(pos))
+            {
+                return false;
+            }
+
+            Piece piece = board[pos];
+            return piece.Type == PieceType.Rook && !piece.HasMoved;
+        }
+
+        private bool AllEmpty(IEnumerable<Position> positions, Board board)
+        {
+            return positions.All(pos => board.IsEmpty(pos));
+        }
+
+        private bool CanCastleKingSide(Position from,Board board)
+        {
+            if (HasMoved)
+            {
+                return false;
+            }
+
+            Position rookPos = new Position(from.Row, 7);
+            Position[] betweenPositions = new Position[] { new Position(from.Row,5),new Position(from.Row,6) };
+
+            return IsUnmovedRook(rookPos, board) && AllEmpty(betweenPositions, board);
+        }
+
+        private bool CanCastleQueenSide(Position from, Board board)
+        {
+            if (HasMoved)
+            {
+                return false;
+            }
+
+            Position rookPos = new Position(from.Row, 0);
+            Position[] betweenPositions = new Position[] { new Position(from.Row, 1), new Position(from.Row, 2), new Position(from.Row, 3) };
+            return IsUnmovedRook(rookPos, board) && AllEmpty(betweenPositions, board);
+        }
+
+        public override Piece Copy()
+        {
+            King copy = new King(Color);
+            copy.HasMoved = HasMoved;
+            return copy;
+        }
+
+        private IEnumerable<Position> MovePositions(Position from,Board board)
+        {
+            foreach(Direction dir in dirs)
+            {
+                Position to=from.Add(dir);
+                if (!Board.IsInside(to))
+                {
+                    continue;
+                }
+                if(board.IsEmpty(to) || board[to].Color != Color)
+                {
+                    yield return to;
+                }
+            }
+        }
+
+        public override IEnumerable<Move> GetMoves(Position from,Board board)
+        {
+            foreach(Position to in MovePositions(from, board))
+            {
+                yield return new NormalMove(from,to);
+            }
+            
+            if(CanCastleKingSide(from, board))
+            {
+                yield return new Castle(MoveType.CastleKs, from);
+            }
+
+            if (CanCastleQueenSide(from, board))
+            {
+                yield return new Castle(MoveType.CastleQs, from);
+            }
+
+        }
+
+        public override bool CanCaptureOpponentKing(Position from, Board board)
+        {
+            return MovePositions(from, board).Any(to =>
+            {
+                Piece piece = board[to];
+                return piece != null && piece.Type == PieceType.King;
+            });
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Bishop : Piece
+    {
+        public override PieceType Type => PieceType.Bishop;
+        public override Player Color { get; }
+
+        public readonly Direction[] dirs = new Direction[]
+        {
+           new Direction(-1, 1),  // NordEst  Direction.NordEst,
+           new Direction(-1, -1), // NordWest Direction.NordWest,
+           new Direction(1, 1),   // SudEst Direction.SudEst,
+           new Direction(1, -1)   // SudWest Direction.SudWest
+        };
+        public Bishop(Player color) 
+        {
+            Color = color;
+        }
+        public override Piece Copy()
+        {
+            Bishop copy = new Bishop(Color);
+            copy.HasMoved = HasMoved;
+            return copy;
+        }
+
+        public override IEnumerable<Move> GetMoves(Position from ,Board board)
+        {
+            return MovePositionsInDirs(from, board, dirs).Select(to=>new NormalMove(from,to));
+        }
+    }
+}
+namespace Chess
+{
+    public class PawnPromotion : Move
+    {
+        public override MoveType Type => MoveType.PawnPromotion;
+
+        public override Position FromPos { get; }
+        public override Position ToPos { get; }
+
+        private readonly PieceType newType;
+
+        public PawnPromotion(Position from, Position to, PieceType newType)
+        {
+            FromPos = from;
+            ToPos = to;
+            this.newType = newType;
+        }
+
+        private Piece CreatePromotionPiece(Player color)
+        {
+            switch (newType)
+            {
+                case PieceType.Knight:return new Knight(color);
+                case PieceType.Bishop: return new Bishop(color);
+                case PieceType.Rook: return new Rook(color);
+                default: return new Queen(color);
+            }
+        }
+
+        public override bool Execute(Board board)
+        {
+            Piece pawn = board[FromPos];
+            board[FromPos] = null;
+
+            Piece promotionPiece = CreatePromotionPiece(pawn.Color);
+            promotionPiece.HasMoved = true;
+            board[ToPos] = promotionPiece;
+
+            return true;
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class NormalMove : Move
+    {
+        public override MoveType Type => MoveType.Normal;
+        public override Position FromPos { get; }
+        public override Position ToPos { get; }
+
+        public NormalMove(Position from, Position to)
+        {
+            FromPos = from;
+            ToPos = to;
+        }
+
+        public override bool Execute(Board board)
+        {
+            Piece piece  = board[FromPos];
+            bool capture = !board.IsEmpty(ToPos);
+            board[ToPos] = piece;
+            board[FromPos] = null;
+            piece.HasMoved = true;
+
+            return capture || piece.Type == PieceType.Pawn;
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public abstract class Move
+    {
+        public abstract MoveType Type { get; }
+        public abstract Position FromPos { get; }
+        public abstract Position ToPos { get; }
+
+        public abstract bool Execute(Board board);
+
+        public virtual bool IsLegal(Board board)
+        {
+            Player player = board[FromPos].Color;
+            Board boardCopy = board.Copy();
+            Execute(boardCopy);
+            return !boardCopy.IsInCheck(player);
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class EnPassant : Move
+    {
+        public override MoveType Type => MoveType.EnPassant;
+        public override Position FromPos { get; }
+        public override Position ToPos { get; }
+
+        private readonly Position capturePos;
+        
+        public EnPassant(Position from,Position to)
+        {
+            FromPos = from;
+            ToPos = to;
+            capturePos = new Position(from.Row, to.Column);
+        }
+
+        public override bool Execute(Board board)
+        {
+            new NormalMove(FromPos,ToPos).Execute(board);
+            board[capturePos] = null;
+
+            return true;
+        }
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class DoublePawn : Move
+    {
+        public override MoveType Type => MoveType.DoublePawn;
+        public override Position FromPos { get; }
+        public override Position ToPos { get; }
+        private readonly Position skippedPos;
+        public DoublePawn(Position from,Position to)
+        {
+            FromPos = from;
+            ToPos = to;
+            skippedPos = new Position((from.Row + to.Row) / 2, from.Column);
+        }
+
+        public override bool Execute(Board board)
+        {
+            Player player = board[FromPos].Color;
+            board.SetPawnSkipPositon(player, skippedPos);
+            new NormalMove(FromPos, ToPos).Execute(board);
+
+            return true;
+        }
+
+
+    }
+}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Chess
+{
+    public class Castle : Move
+    {
+        public override MoveType Type { get; }
+        public override Position FromPos { get; }
+        public override Position ToPos { get; }
+
+        private readonly Direction kingMoveDir;
+        private readonly Position rookFromPos;
+        private readonly Position rookToPos;
+
+
+        public Castle(MoveType type, Position kingPos)
+        {
+            Type = type;
+            FromPos = kingPos;
+
+            Direction direction = new Direction(0, 0); // Create an instance based on your needs
+
+            if (type == MoveType.CastleKs)
+            {
+                kingMoveDir = direction.Est;
+                ToPos = new Position(kingPos.Row, 6);
+                rookFromPos = new Position(kingPos.Row, 7);
+                rookToPos = new Position(kingPos.Row, 5);
+            }
+            else if (type == MoveType.CastleQs)
+            {
+                kingMoveDir = direction.West;
+                ToPos = new Position(kingPos.Row, 2);
+                rookFromPos = new Position(kingPos.Row, 0);
+                rookToPos = new Position(kingPos.Row, 3);
+            }
+        }
+
+
+        public override bool Execute(Board board)
+        {
+           new NormalMove(FromPos, ToPos).Execute(board);
+           new NormalMove(rookFromPos,rookToPos).Execute(board);
+
+           return false;
+        }
+
+        public override bool IsLegal(Board board)
+        {
+            Player player = board[FromPos].Color;
+
+            if (board.IsInCheck(player))
+            {
+                return false;
+            }
+
+            Board copy = board.Copy(); 
+            Position kingPosInCopy = FromPos;
+            
+
+            for (int i = 0; i < 2; i++)
+            {
+                new NormalMove(kingPosInCopy, kingPosInCopy.Add(kingMoveDir)).Execute(copy);
+                kingPosInCopy=kingPosInCopy.Add(kingMoveDir);
+
+                if (copy.IsInCheck(player))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+}
+

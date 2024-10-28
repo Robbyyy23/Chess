@@ -1,0 +1,18 @@
+Chess
+
+Chessboard 8X8 with black and white tiles
+Chess Pieces (16 W 16 B)(King,Queen,Bishop,Knight,Rook,Pawn)
+
+Chess Rules:
+		Move the pieces accordingly
+		Players take turns to move a single piece(White begins)
+		Capture
+		Promotion
+		Castle
+		(Maybe a time limit for every Player)
+		
+
+
+
+Result class to have methods
+Daca castiga cineva si dau restart timpul nu se opreste. 
